@@ -214,40 +214,33 @@ impl Session {
 			self.socket.send(&signals.export()).expect("Unable to initialize socket");
 			let mut buf = [0u8; BUFFER_SIZE];
 			match self.socket.recv(&mut buf) {
-				Ok(_) => {
-					let packet = Packet::build_from(buf);
-					match packet.get_sig() {
-						1 => {
-							let size = packet.get_size();
-							match size {
-								0 => {
-									attempts = attempts + 1;
-									if attempts >= MAXIMUM_SYN_REQUESTS {
-										break Err(ThroughputError::MaximumFailedRequsts)
-									}
-								},
-								_ => {
-									if size == self.options.size {
-										self.initialized = true;
-										println!("Successfully initialized!");
-										break Ok(size)
-									} else {
-										attempts = attempts + 1;
-										if attempts >= MAXIMUM_SYN_REQUESTS {
-											break Err(ThroughputError::MaximumFailedRequsts)
-										}
-									}
-								},
-							}
-						}
-						2 => {},
-						3 => break Err(ThroughputError::ClientStopSignal),
-						_ => {}
+				Ok(_) => {},
+				Err(_) => { print!("e"); break Err(ThroughputError::UDPError) }
+			}
+			
+			let packet = Packet::build_from(buf);
+			let sig = packet.get_sig()
+			if sig == 1 {
+				let size = packet.get_size();
+				if packet.get_size() == 0 {
+					attempts = attempts + 1;
+					if attempts >= MAXIMUM_SYN_REQUESTS {
+						break Err(ThroughputError::MaximumFailedRequsts)
 					}
-				},
-				Err(_) => {
-					print!("e"); break Err(ThroughputError::UDPError)
+					continue;
 				}
+				if size == self.options.size {
+					self.initialized = true;
+					println!("Successfully initialized!");
+					break Ok(size)
+				} else {
+					attempts = attempts + 1;
+					if attempts >= MAXIMUM_SYN_REQUESTS {
+						break Err(ThroughputError::MaximumFailedRequsts)
+					}
+				}
+			} else if sig == 3 {
+				break Err(ThroughputError::ClientStopSignal)
 			}
 		}
 	}
@@ -264,40 +257,37 @@ impl Session {
 		println!("Running client initialization...");
 		return loop {
 			match self.socket.recv(&mut buf) {
-				Ok(_) => {
-					let packet = Packet::build_from(buf);
-					match packet.get_sig() {
-						1 => {
-							let size = packet.get_size();
-							let time = packet.get_data();
-							match size {
-								0 => { self.reply_err(); continue; }
-								_ => self.options.size = size
-							}
-							match time {
-								0 => { self.reply_err(); continue; },
-								_ => self.options.time = time
-							}
-							let reply = Signal::new(
-								Signals::Syn,
-								&self,
-								None,
-								None
-							);
-							self.socket
-								.send(&reply.export())
-		 						.expect("Unable to initialize socket");
-							println!("Successfully initialized!");
-							break Ok(self.options.size);
-						},
-						2 => {}
-						3 => break Err(ThroughputError::HostStopSignal),
-						_ => { self.reply_err(); continue; }
+				Ok(_) => {},
+				Err(_) => { println!("e"); return Err(ThroughputError::UDPError); }
+			}
+			let packet = Packet::build_from(buf);
+			match packet.get_sig() {
+				1 => {
+					let size = packet.get_size();
+					let time = packet.get_data();
+					match size {
+						0 => { self.reply_err(); continue; }
+						_ => self.options.size = size
 					}
+					match time {
+						0 => { self.reply_err(); continue; },
+						_ => self.options.time = time
+					}
+					let reply = Signal::new(
+						Signals::Syn,
+						&self,
+						None,
+						None
+					);
+					self.socket
+						.send(&reply.export())
+						.expect("Unable to initialize socket");
+					println!("Successfully initialized!");
+					break Ok(self.options.size);
 				},
-				Err(_) => {
-					println!("e"); return Err(ThroughputError::UDPError);
-				}
+				2 => {}
+				3 => break Err(ThroughputError::HostStopSignal),
+				_ => { self.reply_err(); continue; }
 			}
 		}
 	}
@@ -309,33 +299,31 @@ impl Session {
 		let mut buf = [0u8; BUFFER_SIZE];
 		loop {
 			match self.socket.recv(&mut buf) {
-				Ok(_) => {
-					let packet = &Packet::build_from(buf);
-					match packet.get_sig() {
-						1 => {
-							let size: usize = packet.get_size();
-							match size > self.options.size {
-								false => break Err(ThroughputError::InvalidSignal),
-								true => {
-									let window = packet.get_time();
-									self.profile.times.push(
-										(start, window, size, PacketType::Ok)
-									);
-									break Ok(size);
-								},
-							}
-						}
-						2 => { break Err(ThroughputError::ClientErrorSignal) },
-						3 => { break Err(ThroughputError::ClientStopSignal) },
-						4 | 5 => { // resynchronize request
-							self.syn = packet.get_data(); break Ok(0)
+				Ok(_) => {},
+				Err(e) => { print!("{:?}", e); break Err(ThroughputError::UDPError) }
+			}
+			
+			let packet = &Packet::build_from(buf);
+			match packet.get_sig() {
+				1 => {
+					let size: usize = packet.get_size();
+					match size > self.options.size {
+						false => break Err(ThroughputError::InvalidSignal),
+						true => {
+							let window = packet.get_time();
+							self.profile.times.push(
+								(start, window, size, PacketType::Ok)
+							);
+							break Ok(size);
 						},
-						_ => { break Err(ThroughputError::InvalidSignal) }
 					}
-				},
-				Err(e) => {
-					print!("{:?}", e); break Err(ThroughputError::UDPError)
 				}
+				2 => { break Err(ThroughputError::ClientErrorSignal) },
+				3 => { break Err(ThroughputError::ClientStopSignal) },
+				4 | 5 => { // resynchronize request
+					self.syn = packet.get_data(); break Ok(0)
+				},
+				_ => { break Err(ThroughputError::InvalidSignal) }
 			}
 		}
 	}
@@ -347,38 +335,38 @@ impl Session {
 			if start.elapsed().unwrap().as_secs() < self.options.time as u64{
 				match self.socket.recv(&mut in_buf) {
 					Ok(size) => {
-						if size != 0 {
-							match self.update_syn(in_buf) {
-								Ok(_) => {
-									let d = start.elapsed().unwrap();
-									let reply = Signal::new(
-										Signals::Ok,
-										&self, 
-										Some(size),
-										Some(d.as_micros())
-									);
-									self.socket.send(&reply.export()).expect("couldn't reply to host");
-									self.profile.times.push(
-										(start, d, size, PacketType::Ok)
-									);
-									return Ok(size)
-								},
-								Err(syn) => {
-									let d = start.elapsed().unwrap();
-									let reply = Signal::new(
-										Signals::ResendFromSyn(syn),
-										&self,
-										None,
-										None
-									);
-									self.socket.send(&reply.export()).expect("couldn't reply to host");
-									self.profile.times.push(
-										(start, d, size, PacketType::Jittered)
-									);
-									return Ok(size)
-								},
-							}
-						} else { self.reply_err(); return Err(ThroughputError::InvalidSignal) }
+						if size == 0 {
+							self.reply_err(); return Err(ThroughputError::InvalidSignal)
+						}
+						match self.update_syn(in_buf) {
+							Ok(_) => {},
+							Err(syn) => {
+								let d = start.elapsed().unwrap();
+								let reply = Signal::new(
+									Signals::ResendFromSyn(syn),
+									&self,
+									None,
+									None
+								);
+								self.socket.send(&reply.export()).expect("couldn't reply to host");
+								self.profile.times.push(
+									(start, d, size, PacketType::Jittered)
+								);
+								return Ok(size)
+							},
+						}
+						let d = start.elapsed().unwrap();
+						let reply = Signal::new(
+							Signals::Ok,
+							&self, 
+							Some(size),
+							Some(d.as_micros())
+						);
+						self.socket.send(&reply.export()).expect("couldn't reply to host");
+						self.profile.times.push(
+							(start, d, size, PacketType::Ok)
+						);
+						return Ok(size)
 					},
 					Err(e) => { println!("{:?}", e); return Err(ThroughputError::UDPError) }
 				}
@@ -390,53 +378,48 @@ impl Session {
 		match self.options.is_client {
 			true => {
 				match self.init_client() {
-					Ok(_) => {
-						let now = SystemTime::now();
-						loop {
-							match now.elapsed() {
-								Ok(d) => {
-									if d.as_secs() < self.options.time as u64 {
-										match self.run_client() {
-											Ok(_) => {
-												self.dead_time = Some(SystemTime::now());
-											},
-											Err(e) => panic!("{}", e)
-										}
-									} else { break Ok(()) }
-								},
-								Err(e) => {
-									panic!("{:?}", e);
-								}
-							}
-						}
-					},
+					Ok(_) => {},
 					Err(e) => panic!("{:?}", e)
 				}
+				
+				let now = SystemTime::now();
+				loop { match now.elapsed() {
+					Ok(d) => {
+						if d.as_secs() < self.options.time as u64 {
+							match self.run_client() {
+								Ok(_) => {
+									self.dead_time = Some(SystemTime::now());
+								},
+								Err(e) => panic!("{}", e)
+							}
+						} else { break Ok(()) }
+					},
+					Err(e) => {
+						panic!("{:?}", e);
+					}
+				}}
+			},
 			},
 			false => {
 				match self.init_host() {
-					Ok(_) => {
-						let now = SystemTime::now();
-						loop {
-							match now.elapsed() {
-								Ok(d) => {
-									if d.as_secs() < self.options.time as u64 {
-										match self.run_host() {
-											Ok(_) => {
-												self.dead_time = Some(SystemTime::now());
-											},
-											Err(e) => panic!("{}", e)
-										}
-									} else { break Ok(()) }
-								},
-								Err(e) => {
-									panic!("{:?}", e);
-								}
-							}
-						}
-					},
+					Ok(_) => {},
 					Err(e) => panic!("{:?}", e)
 				}
+				let now = SystemTime::now();
+				loop { match now.elapsed() {
+					Ok(d) => {
+						if d.as_secs() >= self.options.time as u64 {
+							break Ok(())
+						}
+						match self.run_host() {
+							Ok(_) => { self.dead_time = Some(SystemTime::now()); },
+							Err(e) => panic!("{}", e)
+						}
+					},
+					Err(e) => {
+						panic!("{:?}", e);
+					}
+				}}
 			}
 		}
 	}
@@ -505,7 +488,6 @@ pub struct Args {
 }
 
 impl Args {
-
 	pub fn init() -> Args {
 		// cmd options
 		let args: Vec<String> = env::args().collect();
@@ -522,83 +504,73 @@ impl Args {
 				"-d" | "--d" => {
 					destination_ip = args[counter].trim().to_lowercase(); continue;
 				},
-				"-p" | "--p" => {
-					port = {
-						match args[counter].trim().to_lowercase().as_str().parse::<i32>() {
-							Ok(int) => int,
-							Err(_) => {
-								println!("Invalid input for port!");
-								loop {
-									let s = prompt("UDP Port: ");
-									match s.as_str().parse::<i32>() {
-										Ok(i) => {
-											if i < 65353 && i > 1023 { break i
-											} else { println!("Range invalid!"); continue; }
-										}
-										Err(_) => { println!("Input invalid!"); continue; }
-									};
-								}
+				"-p" | "--p" => { port = {
+					match args[counter].trim().to_lowercase().as_str().parse::<i32>() {
+						Ok(int) => int,
+						Err(_) => {
+							println!("Invalid input for port!");
+							loop {
+								let s = prompt("UDP Port: ");
+								match s.as_str().parse::<i32>() {
+									Ok(i) => {
+										if i < 65353 && i > 1023 { break i
+										} else { println!("Range invalid!"); continue; }
+									}
+									Err(_) => { println!("Input invalid!"); continue; }
+								};
 							}
 						}
-					}; continue;
-				},
-				"-s" | "--s" => {
-					speed = {
-						match args[counter].trim().to_lowercase().as_str().parse::<i32>() {
-							Ok(int) => int,
-							Err(_) => {
-								println!("Invalid input for speed!");
-								loop {
-									let s = prompt("Speed (1-10): ");
-									match s.as_str().parse::<i32>() {
-										Ok(i) => {
-											if i >= 1 && i <= 10 { break i
-											} else { println!("Input range invalid!"); continue; }
-										},
-										Err(_) => { println!("Input invalid!"); continue;  }
-									};
-								}
+					}
+				}; continue; },
+				"-s" | "--s" => { speed = {
+					match args[counter].trim().to_lowercase().as_str().parse::<i32>() {
+						Ok(int) => int,
+						Err(_) => {
+							println!("Invalid input for speed!");
+							loop {
+								let s = prompt("Speed (1-10): ");
+								match s.as_str().parse::<i32>() {
+									Ok(i) => {
+										if i >= 1 && i <= 10 { break i
+										} else { println!("Input range invalid!"); continue; }
+									},
+									Err(_) => { println!("Input invalid!"); continue;  }
+								};
 							}
 						}
-					}; continue;
-				},
-				"-z" | "--z" => {
-					size = {
-						match args[counter].trim().to_lowercase().as_str().parse::<i32>() {
-							Ok(int) => int as usize,
-							Err(_) => {
-								println!("Invalid input for size!");
-								loop {
-									let s = prompt("Message size? (Bytes): ");
-									match s.as_str().parse::<i32>() {
-										Ok(i) => i as usize,
-										Err(_) => { println!("Input invalid!"); continue;  }
-									};
-								}
+					}
+				}; continue; },
+				"-z" | "--z" => { size = {
+					match args[counter].trim().to_lowercase().as_str().parse::<i32>() {
+						Ok(int) => int as usize,
+						Err(_) => {
+							println!("Invalid input for size!");
+							loop {
+								let s = prompt("Message size? (Bytes): ");
+								match s.as_str().parse::<i32>() {
+									Ok(i) => i as usize,
+									Err(_) => { println!("Input invalid!"); continue;  }
+								};
 							}
 						}
-					}; continue;
-				},
-				"-t" | "--t" => {
-					time = {
-						match args[counter].trim().to_lowercase().as_str().parse::<u128>() {
-							Ok(int) => int,
-							Err(_) => {
-								println!("Invalid input for time!");
-								loop {
-									let s = prompt("Time? (s): ");
-									match s.as_str().parse::<i32>() {
-										Ok(i) => i as usize,
-										Err(_) => { println!("Input invalid!"); continue;  }
-									};
-								}
+					}
+				}; continue; },
+				"-t" | "--t" => { time = {
+					match args[counter].trim().to_lowercase().as_str().parse::<u128>() {
+						Ok(int) => int,
+						Err(_) => {
+							println!("Invalid input for time!");
+							loop {
+								let s = prompt("Time? (s): ");
+								match s.as_str().parse::<i32>() {
+									Ok(i) => i as usize,
+									Err(_) => { println!("Input invalid!"); continue;  }
+								};
 							}
 						}
-					}; continue;
-				},
-				"-c" | "--c" => {
-					is_client = true; continue;
-				},
+					}
+				}; continue; },
+				"-c" | "--c" => { is_client = true; continue; },
 				_ => { continue; }
 			}
 		}
